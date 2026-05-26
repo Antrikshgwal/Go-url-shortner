@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"strconv"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -18,11 +19,11 @@ import (
 
 var secret_key = []byte("your_secret_key")
 
-func generateToken(username string, email string) (string, error) {
+func generateToken(userID int64, email string) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256,
 		jwt.MapClaims{
-			"username": username,
-			"email":    email,
+			"user_id": userID,
+			"email":   email,
 			"exp":      time.Now().Add(time.Hour * 24).Unix(),
 		})
 
@@ -34,7 +35,7 @@ func generateToken(username string, email string) (string, error) {
 	return tokenString, nil
 }
 
-func validateToken(tokenString string) (string, string, error) {
+func validateToken(tokenString string) (int64, string, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method")
@@ -43,22 +44,31 @@ func validateToken(tokenString string) (string, string, error) {
 	})
 
 	if err != nil {
-		return "", "", err
+		return 0, "", err
 	}
 
 	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
-		username, ok := claims["username"].(string)
-		if !ok {
-			return "", "", fmt.Errorf("invalid username in token")
+		var userID int64
+		switch v := claims["user_id"].(type) {
+		case float64:
+			userID = int64(v)
+		case string:
+			parsed, parseErr := strconv.ParseInt(v, 10, 64)
+			if parseErr != nil {
+				return 0, "", fmt.Errorf("invalid user_id in token")
+			}
+			userID = parsed
+		default:
+			return 0, "", fmt.Errorf("invalid user_id in token")
 		}
 		email, ok := claims["email"].(string)
 		if !ok {
-			return "", "", fmt.Errorf("invalid email in token")
+			return 0, "", fmt.Errorf("invalid email in token")
 		}
-		return username, email, nil
+		return userID, email, nil
 	}
 
-	return "", "", fmt.Errorf("invalid token")
+	return 0, "", fmt.Errorf("invalid token")
 }
 
 func RegisterHandler(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +92,7 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// check if user_name or email already exists in database
-	var id int
+	var id int64
 
 	err := conn.QueryRow("SELECT user_id FROM users WHERE user_name = $1", creds.Username).Scan(&id)
 	if err == nil {
@@ -112,7 +122,7 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = conn.Exec("INSERT INTO users (user_name, email, password_hash) VALUES ($1, $2, $3)", creds.Username, creds.Email, hashedPassword)
+	err = conn.QueryRow("INSERT INTO users (user_name, email, password_hash) VALUES ($1, $2, $3) RETURNING user_id", creds.Username, creds.Email, hashedPassword).Scan(&id)
 	if err != nil {
 		if isUniqueViolation(err) {
 			WriteError(w, "Username or email already exists", http.StatusConflict)
@@ -123,7 +133,7 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := generateToken(creds.Username, creds.Email)
+	token, err := generateToken(id, creds.Email)
 	if err != nil {
 		WriteError(w, "Failed to generate token", http.StatusInternalServerError)
 		return
@@ -131,7 +141,7 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"username": creds.Username,
+		"user_id": id,
 		"email":    creds.Email,
 		"token":    token,
 	})
@@ -157,7 +167,8 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	var storedHashedPassword string
 	var email string
-	if err := conn.QueryRow("SELECT password_hash, email FROM users WHERE user_name = $1", creds.Username).Scan(&storedHashedPassword, &email); err != nil {
+	var userID int64
+	if err := conn.QueryRow("SELECT user_id, password_hash, email FROM users WHERE user_name = $1", creds.Username).Scan(&userID, &storedHashedPassword, &email); err != nil {
 		if err == sql.ErrNoRows {
 			WriteError(w, "Invalid username or password", http.StatusUnauthorized)
 		} else {
@@ -172,7 +183,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := generateToken(creds.Username, email)
+	token, err := generateToken(userID, email)
 	if err != nil {
 		WriteError(w, "Failed to generate token", http.StatusInternalServerError)
 		return
@@ -186,7 +197,7 @@ func AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			WriteError(w, "Authorization header missing", http.StatusUnauthorized)
+			WriteError(w, "Authorization needed", http.StatusUnauthorized)
 			return
 		}
 		if !strings.HasPrefix(authHeader, "Bearer ") {
@@ -194,12 +205,12 @@ func AuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-		username, email, err := validateToken(tokenString)
+		userID, email, err := validateToken(tokenString)
 		if err != nil {
 			WriteError(w, "Invalid or expired token", http.StatusUnauthorized)
 			return
 		}
-		ctx := context.WithValue(r.Context(), "username", username)
+		ctx := context.WithValue(r.Context(), "user_id", userID)
 		ctx = context.WithValue(ctx, "email", email)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

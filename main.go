@@ -44,7 +44,9 @@ func main() {
 	mux.HandleFunc("POST /login", LoginHandler)
 	mux.HandleFunc("GET /stats/{code}", getStats)
 
-	mux.HandleFunc("POST /shorten", shorten)
+
+	mux.Handle("POST /shorten", AuthMiddleware(http.HandlerFunc(shorten)))
+	mux.Handle("GET /myurls", AuthMiddleware(http.HandlerFunc(getMyUrls)))
 	mux.HandleFunc("GET /{code}", redirect)
 	mux.HandleFunc("GET /health", healthHandler)
 
@@ -152,6 +154,14 @@ func generateCode() string {
 func shorten(w http.ResponseWriter, r *http.Request) {
 	var req ShortenRequest
 
+	userID, ok := r.Context().Value("user_id").(int64)
+	if !ok {
+		WriteError(w, "Unauthorized: Missing or invalid token", http.StatusUnauthorized)
+		return
+	}
+
+
+
 	if conn == nil {
 		WriteError(w, "Database not initialized", http.StatusServiceUnavailable)
 		slog.Error("Database connection not initialized")
@@ -182,9 +192,9 @@ func shorten(w http.ResponseWriter, r *http.Request) {
 	for i := 0; i < maxCodeAttempts; i++ {
 		code = generateCode()
 		_, err = conn.Exec(`
-INSERT INTO urls (short_code, original_url)
-VALUES ($1, $2)
-`, code, req.OriginalURL)
+INSERT INTO urls (user_id, short_code, original_url)
+VALUES ($1, $2, $3)
+`, userID, code, req.OriginalURL)
 		if err == nil {
 			break
 		}
@@ -287,3 +297,51 @@ GROUP BY u.id
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(stats)
 }
+
+func getMyUrls(w http.ResponseWriter, r *http.Request) {
+	if conn == nil {
+		WriteError(w, "Database not initialized", http.StatusServiceUnavailable)
+		slog.Error("Database connection not initialized")
+		return
+	}
+	userID, ok := r.Context().Value("user_id").(int64)
+	if !ok {
+		WriteError(w, "Unauthorized: Missing or invalid token", http.StatusUnauthorized)
+		return
+	}
+	 rows, err := conn.Query(`
+          SELECT u.short_code, u.original_url, u.created_at, COUNT(c.id) as clicks
+          FROM urls u
+          LEFT JOIN clicks c ON u.id = c.url_id
+          WHERE u.user_id = $1
+          GROUP BY u.id
+          ORDER BY u.created_at DESC
+      `, userID)
+	  if err != nil {
+		WriteError(w, "Failed to query URLs: Database error", http.StatusInternalServerError)
+		slog.Error("Failed to query URLs for user", "user_id", userID, "error", err)
+		return
+	}
+	defer rows.Close()
+
+	var urls []map[string]interface{}
+	for rows.Next() {
+		var shortCode, originalURL, createdAt string
+		var clicks int
+		if err := rows.Scan(&shortCode, &originalURL, &createdAt, &clicks); err != nil {
+			WriteError(w, "Failed to read URL data: Database error", http.StatusInternalServerError)
+			slog.Error("Failed to read URL data for user", "user_id", userID, "error", err)
+			return
+		}
+		urls = append(urls, map[string]interface{}{
+			"short_code":   shortCode,
+			"original_url": originalURL,
+			"created_at":   createdAt,
+			"clicks":       clicks,
+			"short_url":    fmt.Sprintf("http://localhost:3000/%s", shortCode),
+		})
+		w.Header()
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(urls)
+	}
+	}
