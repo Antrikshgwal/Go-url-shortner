@@ -16,16 +16,33 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // Create a db pool
 var conn *sql.DB
+var rdb *redis.Client
+var ctx = context.Background()
 
 type User struct {
 	Name string `json:"name"`
 }
 
 func main() {
+
+	// Initialize Redis client
+	rdb = redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+	pingCtx, cancelPing := context.WithTimeout(context.Background(), 2*time.Second)
+	if err := rdb.Ping(pingCtx).Err(); err != nil {
+		slog.Error("Redis ping failed", "error", err)
+	} else {
+		slog.Info("Redis connection established")
+	}
+	cancelPing()
+
 	// Initialize logger
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -102,6 +119,18 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte(`{"status":"unhealthy","reason":"database_not_initialized"}`))
 		return
+	}
+
+	// check redis connection health
+	if rdb != nil {
+		pingCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := rdb.Ping(pingCtx).Err(); err != nil {
+			slog.Error("health_check_failed", "component", "redis", "error", err)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"status":"unhealthy","reason":"redis_down"}`))
+			return
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -231,18 +260,52 @@ func redirect(w http.ResponseWriter, r *http.Request) {
 	code := r.PathValue("code")
 	var originalURL string
 	var Id int
-	err := conn.QueryRow(`
+
+	cacheKey := "short_url:" + code
+	if rdb != nil {
+		cachedBytes, err := rdb.Get(r.Context(), cacheKey).Bytes()
+		if err == nil {
+			var cached struct {
+				ID  int    `json:"id"`
+				URL string `json:"url"`
+			}
+			if err := json.Unmarshal(cachedBytes, &cached); err == nil && cached.ID > 0 && cached.URL != "" {
+				Id = cached.ID
+				originalURL = cached.URL
+			} else if err != nil {
+				slog.Warn("Redis cache unmarshal failed", "error", err)
+			}
+		} else if !errors.Is(err, redis.Nil) {
+			slog.Warn("Redis cache lookup failed", "error", err)
+		}
+	}
+
+	if originalURL == "" {
+		err := conn.QueryRow(`
 SELECT id, original_url FROM urls WHERE short_code = $1
 `, code).Scan(&Id, &originalURL)
-	if err == sql.ErrNoRows {
-		slog.Error("Short code not found for redirecting", "short_code", code)
-		WriteError(w, "Short code not found", http.StatusNotFound)
-		return
-	}
-	if err != nil {
-		slog.Error("Failed to query URL", "error", err)
-		WriteError(w, "Failed to query URL: Database error", http.StatusInternalServerError)
-		return
+		if err == sql.ErrNoRows {
+			slog.Error("Short code not found for redirecting", "short_code", code)
+			WriteError(w, "Short code not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			slog.Error("Failed to query URL", "error", err)
+			WriteError(w, "Failed to query URL: Database error", http.StatusInternalServerError)
+			return
+		}
+
+		if rdb != nil {
+			payload, err := json.Marshal(map[string]interface{}{
+				"id":  Id,
+				"url": originalURL,
+			})
+			if err != nil {
+				slog.Warn("Redis cache marshal failed", "error", err)
+			} else if err := rdb.Set(r.Context(), cacheKey, payload, 24*time.Hour).Err(); err != nil {
+				slog.Warn("Redis cache set failed", "error", err)
+			}
+		}
 	}
 
 	ip := clientIP(r.RemoteAddr)
