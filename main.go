@@ -13,13 +13,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
-
-	"github.com/lib/pq"
 )
 
 // Create a db pool
@@ -28,9 +24,6 @@ var conn *sql.DB
 type User struct {
 	Name string `json:"name"`
 }
-
-var userCache = make(map[int]User)
-var cacheMutex sync.RWMutex
 
 func main() {
 	// Initialize logger
@@ -47,10 +40,10 @@ func main() {
 	//  Routing and middleware setup
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleRoot)
-	mux.HandleFunc("POST /user", createUser)
-	mux.HandleFunc("GET /users/{id}", getUser)
+	mux.HandleFunc("POST /register", RegisterHandler)
+	mux.HandleFunc("POST /login", LoginHandler)
 	mux.HandleFunc("GET /stats/{code}", getStats)
-	mux.HandleFunc("DELETE /delete/{id}", deleteUser)
+
 	mux.HandleFunc("POST /shorten", shorten)
 	mux.HandleFunc("GET /{code}", redirect)
 	mux.HandleFunc("GET /health", healthHandler)
@@ -77,7 +70,6 @@ func main() {
 	<-shutdownCtx.Done()
 	slog.Info("Shutdown signal received, winding down HTTP server...")
 
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -100,7 +92,6 @@ func main() {
 
 	slog.Info("Application fully shutdown.")
 }
-
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -129,93 +120,6 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "Welcome to the URL Shortener API",
 	})
-}
-
-func createUser(w http.ResponseWriter, r *http.Request) {
-	var user User
-	err := json.NewDecoder(r.Body).Decode(&user)
-
-	if err != nil {
-		http.Error(
-			w,
-			err.Error(),
-			http.StatusBadRequest,
-		)
-		return
-	}
-	if user.Name == "" {
-		http.Error(
-			w,
-			"name is required",
-			http.StatusBadRequest,
-		)
-		return
-	}
-	cacheMutex.Lock()
-	userCache[len(userCache)+1] = user
-	cacheMutex.Unlock()
-
-	slog.Info("User created", "user_id", len(userCache), "user", user.Name)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"user_id": len(userCache),
-		"user":    user.Name,
-	})
-
-}
-
-func getUser(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(r.PathValue("id"))
-	if err != nil {
-		http.Error(w,
-			err.Error(),
-			http.StatusBadRequest,
-		)
-		return
-	}
-	cacheMutex.RLock()
-	user, ok := userCache[id]
-	cacheMutex.RUnlock()
-
-	if !ok {
-		http.Error(
-			w,
-			"User not found",
-			http.StatusNotFound,
-		)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(user)
-}
-
-func deleteUser(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(r.PathValue("id"))
-	if err != nil {
-		http.Error(
-			w,
-			err.Error(),
-			http.StatusBadRequest,
-		)
-		return
-	}
-	cacheMutex.Lock()
-	defer cacheMutex.Unlock()
-	if _, ok := userCache[id]; !ok {
-		http.Error(
-			w,
-			"User not found",
-			http.StatusNotFound,
-		)
-		return
-	}
-	delete(userCache, id)
-	w.WriteHeader(http.StatusNoContent)
-	slog.Info("User deleted", "user_id", id)
-
 }
 
 // Request/Response types
@@ -249,12 +153,12 @@ func shorten(w http.ResponseWriter, r *http.Request) {
 	var req ShortenRequest
 
 	if conn == nil {
-		http.Error(w, "Database not initialized", http.StatusServiceUnavailable)
+		WriteError(w, "Database not initialized", http.StatusServiceUnavailable)
 		slog.Error("Database connection not initialized")
 		return
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request payload", http.StatusBadRequest)
+		WriteError(w, "Invalid request payload", http.StatusBadRequest)
 		slog.Error("Failed to decode request body", "error", err)
 		return
 	}
@@ -262,8 +166,13 @@ func shorten(w http.ResponseWriter, r *http.Request) {
 		req.OriginalURL = req.URL
 	}
 	if req.OriginalURL == "" {
-		http.Error(w, "URL is required", http.StatusBadRequest)
+		WriteError(w, "URL is required", http.StatusBadRequest)
 		slog.Error("URL is required")
+		return
+	}
+	if err := validateURL(req.OriginalURL); err != nil {
+		WriteError(w, "Invalid URL format", http.StatusBadRequest)
+		slog.Error("URL validation failed", "error", err)
 		return
 	}
 
@@ -284,11 +193,11 @@ VALUES ($1, $2)
 			continue
 		}
 		slog.Error("Failed to insert URL", "error", err)
-		http.Error(w, "Failed to insert URL", http.StatusInternalServerError)
+		WriteError(w, "Failed to insert URL", http.StatusInternalServerError)
 		return
 	}
 	if err != nil {
-		http.Error(w, "Failed to generate unique short code", http.StatusInternalServerError)
+		WriteError(w, "Failed to generate unique short code", http.StatusInternalServerError)
 		slog.Error("Failed to generate unique short code", "error", err)
 		return
 	}
@@ -305,7 +214,7 @@ VALUES ($1, $2)
 
 func redirect(w http.ResponseWriter, r *http.Request) {
 	if conn == nil {
-		http.Error(w, "Database not initialized", http.StatusServiceUnavailable)
+		WriteError(w, "Database not initialized", http.StatusServiceUnavailable)
 		slog.Error("Database connection not initialized")
 		return
 	}
@@ -317,12 +226,12 @@ SELECT id, original_url FROM urls WHERE short_code = $1
 `, code).Scan(&Id, &originalURL)
 	if err == sql.ErrNoRows {
 		slog.Error("Short code not found for redirecting", "short_code", code)
-		http.Error(w, "Short code not found", http.StatusNotFound)
+		WriteError(w, "Short code not found", http.StatusNotFound)
 		return
 	}
 	if err != nil {
 		slog.Error("Failed to query URL", "error", err)
-		http.Error(w, "Failed to query URL: Database error", http.StatusInternalServerError)
+		WriteError(w, "Failed to query URL: Database error", http.StatusInternalServerError)
 		return
 	}
 
@@ -351,7 +260,7 @@ func clientIP(remoteAddr string) string {
 func getStats(w http.ResponseWriter, r *http.Request) {
 	if conn == nil {
 		slog.Error("Database connection not initialized")
-		http.Error(w, "Database not initialized", http.StatusServiceUnavailable)
+		WriteError(w, "Database not initialized", http.StatusServiceUnavailable)
 		return
 	}
 	code := r.PathValue("code")
@@ -365,54 +274,16 @@ GROUP BY u.id
 `, code).Scan(&stats.ShortCode, &stats.OriginalURL, &stats.Clicks, &stats.CreatedAt)
 
 	if err == sql.ErrNoRows {
-		http.Error(w, "Short code not found", http.StatusNotFound)
+		WriteError(w, "Short code not found", http.StatusNotFound)
 		slog.Error("Short code not found", "short_code", code)
 		return
 	}
 	if err != nil {
-		http.Error(w, "Failed to query stats: Database error", http.StatusInternalServerError)
+		WriteError(w, "Failed to query stats: Database error", http.StatusInternalServerError)
 		slog.Error("Failed to query stats", "error", err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(stats)
-}
-
-func isUniqueViolation(err error) bool {
-	var pqErr *pq.Error
-	if errors.As(err, &pqErr) {
-		return pqErr.Code == "23505"
-	}
-	return false
-}
-
-type statusWriter struct {
-	http.ResponseWriter
-	status int
-}
-
-func (w *statusWriter) WriteHeader(status int) {
-	w.status = status
-	w.ResponseWriter.WriteHeader(status)
-}
-
-func (w *statusWriter) Write(b []byte) (int, error) {
-	if w.status == 0 {
-		w.status = http.StatusOK
-	}
-	return w.ResponseWriter.Write(b)
-}
-
-func loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sw := &statusWriter{ResponseWriter: w}
-		start := time.Now()
-
-		next.ServeHTTP(sw, r)
-
-		duration := time.Since(start)
-		ip := clientIP(r.RemoteAddr)
-		slog.Info("request", "method", r.Method, "path", r.URL.Path, "status", sw.status, "duration_ms", duration.Milliseconds(), "ip", ip)
-	})
 }
