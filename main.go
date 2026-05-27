@@ -33,9 +33,11 @@ func main() {
 
 	// Initialize Redis client
 	rdb = redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
+		Addr:     "localhost:6379",
+		Password: "", // no password set
+		DB:       0,  // use default DB
 	})
-	pingCtx, cancelPing := context.WithTimeout(context.Background(), 2*time.Second)
+	pingCtx, cancelPing := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := rdb.Ping(pingCtx).Err(); err != nil {
 		slog.Error("Redis ping failed", "error", err)
 	} else {
@@ -61,10 +63,10 @@ func main() {
 	mux.HandleFunc("POST /login", LoginHandler)
 	mux.HandleFunc("GET /stats/{code}", getStats)
 
-
 	mux.Handle("POST /shorten", AuthMiddleware(http.HandlerFunc(shorten)))
 	mux.Handle("GET /myurls", AuthMiddleware(http.HandlerFunc(getMyUrls)))
 	mux.HandleFunc("GET /{code}", redirect)
+	mux.Handle("DELETE /{code}", AuthMiddleware(http.HandlerFunc(deleteURL)))
 	mux.HandleFunc("GET /health", healthHandler)
 
 	handler := loggingMiddleware(mux)
@@ -114,19 +116,25 @@ func main() {
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
+	// check database connection health
+	dbStatus := "ok"
 	if conn == nil {
 		slog.Error("health_check_failed", "component", "database", "error", "connection_not_initialized")
+		dbStatus = "not_initialized"
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte(`{"status":"unhealthy","reason":"database_not_initialized"}`))
 		return
 	}
 
 	// check redis connection health
+	rdbStatus := "ok"
 	if rdb != nil {
 		pingCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		if err := rdb.Ping(pingCtx).Err(); err != nil {
 			slog.Error("health_check_failed", "component", "redis", "error", err)
+			rdbStatus = "down"
 			w.WriteHeader(http.StatusServiceUnavailable)
 			w.Write([]byte(`{"status":"unhealthy","reason":"redis_down"}`))
 			return
@@ -137,12 +145,14 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if err := conn.PingContext(ctx); err != nil {
 		slog.Error("health_check_failed", "component", "database", "error", err)
+		dbStatus = "down"
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte(`{"status":"unhealthy","reason":"database_down"}`))
 		return
 	}
+
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"healthy"}`))
+	json.NewEncoder(w).Encode(map[string]interface{}{"status": "healthy", "dbStatus": dbStatus, "redisStatus": rdbStatus})
 }
 
 func handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -188,8 +198,6 @@ func shorten(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, "Unauthorized: Missing or invalid token", http.StatusUnauthorized)
 		return
 	}
-
-
 
 	if conn == nil {
 		WriteError(w, "Database not initialized", http.StatusServiceUnavailable)
@@ -330,6 +338,37 @@ func clientIP(remoteAddr string) string {
 	return strings.Trim(remoteAddr, "[]")
 }
 
+func deleteURL(w http.ResponseWriter, r *http.Request) {
+	code := r.PathValue("code")
+	if conn == nil {
+		WriteError(w, "Database not initialized", http.StatusServiceUnavailable)
+		slog.Error("Database connection not initialized")
+		return
+	}
+	deleteResult, err := conn.Exec(`DELETE FROM urls WHERE short_code = $1`, code)
+	if err != nil {
+		slog.Error("Failed to delete URL", "error", err)
+		WriteError(w, "Failed to delete URL", http.StatusInternalServerError)
+		return
+	}
+	rowsAffected, err := deleteResult.RowsAffected()
+	if err != nil {
+		slog.Error("Failed to read delete result", "error", err)
+		WriteError(w, "Failed to delete URL", http.StatusInternalServerError)
+		return
+	}
+	if rowsAffected == 0 {
+		WriteError(w, "URL not found", http.StatusNotFound)
+		return
+	}
+	// Clear cache after deleting user
+	rdbDelete := rdb.Del(r.Context(), "short_url:"+code)
+	if rdbDelete.Err() != nil && !errors.Is(rdbDelete.Err(), redis.Nil) {
+		slog.Warn("Failed to delete cache for short code", "short_code", code, "error", rdbDelete.Err())
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func getStats(w http.ResponseWriter, r *http.Request) {
 	if conn == nil {
 		slog.Error("Database connection not initialized")
@@ -372,7 +411,7 @@ func getMyUrls(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, "Unauthorized: Missing or invalid token", http.StatusUnauthorized)
 		return
 	}
-	 rows, err := conn.Query(`
+	rows, err := conn.Query(`
           SELECT u.short_code, u.original_url, u.created_at, COUNT(c.id) as clicks
           FROM urls u
           LEFT JOIN clicks c ON u.id = c.url_id
@@ -380,7 +419,7 @@ func getMyUrls(w http.ResponseWriter, r *http.Request) {
           GROUP BY u.id
           ORDER BY u.created_at DESC
       `, userID)
-	  if err != nil {
+	if err != nil {
 		WriteError(w, "Failed to query URLs: Database error", http.StatusInternalServerError)
 		slog.Error("Failed to query URLs for user", "user_id", userID, "error", err)
 		return
@@ -407,4 +446,4 @@ func getMyUrls(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(urls)
 	}
-	}
+}
