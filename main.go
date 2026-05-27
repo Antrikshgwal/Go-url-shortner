@@ -25,6 +25,19 @@ var conn *sql.DB
 var rdb *redis.Client
 var ctx = context.Background()
 
+// contextKey is a private type for context keys to avoid collisions with
+// keys defined in other packages. (go vet SA1029)
+type contextKey string
+
+const userIDKey contextKey = "user_id"
+
+// cacheKey builds the canonical Redis key for a short code. Using one helper
+// guarantees the write path (redirect) and the invalidation path (deleteURL)
+// can never drift apart.
+func cacheKey(code string) string {
+	return "short_url:" + code
+}
+
 type User struct {
 	Name string `json:"name"`
 }
@@ -99,6 +112,16 @@ func main() {
 		slog.Error("Server shutdown failed", "error", err)
 	} else {
 		slog.Info("HTTP server stopped cleanly")
+	}
+
+	// close redis connection
+	if rdb != nil {
+		slog.Info("Closing Redis connection...")
+		if err := rdb.Close(); err != nil {
+			slog.Error("Failed to close Redis connection cleanly", "error", err)
+		} else {
+			slog.Info("Redis connection closed successfully")
+		}
 	}
 
 	// close database connections last
@@ -193,7 +216,7 @@ func generateCode() string {
 func shorten(w http.ResponseWriter, r *http.Request) {
 	var req ShortenRequest
 
-	userID, ok := r.Context().Value("user_id").(int64)
+	userID, ok := r.Context().Value(userIDKey).(int64)
 	if !ok {
 		WriteError(w, "Unauthorized: Missing or invalid token", http.StatusUnauthorized)
 		return
@@ -269,9 +292,9 @@ func redirect(w http.ResponseWriter, r *http.Request) {
 	var originalURL string
 	var Id int
 
-	cacheKey := "short_url:" + code
+	key := cacheKey(code)
 	if rdb != nil {
-		cachedBytes, err := rdb.Get(r.Context(), cacheKey).Bytes()
+		cachedBytes, err := rdb.Get(r.Context(), key).Bytes()
 		if err == nil {
 			var cached struct {
 				ID  int    `json:"id"`
@@ -310,7 +333,7 @@ SELECT id, original_url FROM urls WHERE short_code = $1
 			})
 			if err != nil {
 				slog.Warn("Redis cache marshal failed", "error", err)
-			} else if err := rdb.Set(r.Context(), cacheKey, payload, 24*time.Hour).Err(); err != nil {
+			} else if err := rdb.Set(r.Context(), key, payload, 24*time.Hour).Err(); err != nil {
 				slog.Warn("Redis cache set failed", "error", err)
 			}
 		}
@@ -318,7 +341,9 @@ SELECT id, original_url FROM urls WHERE short_code = $1
 
 	ip := clientIP(r.RemoteAddr)
 	go func(id int, ip, ua string) {
-		_, err := conn.Exec(`
+		insertCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err := conn.ExecContext(insertCtx, `
 INSERT INTO clicks (url_id, ip_address, user_agent, clicked_at)
 VALUES ($1, $2, $3, $4)
 `, id, ip, ua, time.Now())
@@ -361,10 +386,11 @@ func deleteURL(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, "URL not found", http.StatusNotFound)
 		return
 	}
-	// Clear cache after deleting user
-	rdbDelete := rdb.Del(r.Context(), "short_url:"+code)
-	if rdbDelete.Err() != nil && !errors.Is(rdbDelete.Err(), redis.Nil) {
-		slog.Warn("Failed to delete cache for short code", "short_code", code, "error", rdbDelete.Err())
+	// Clear cache after deleting URL (must use the same key as the write path)
+	if rdb != nil {
+		if err := rdb.Del(r.Context(), cacheKey(code)).Err(); err != nil && !errors.Is(err, redis.Nil) {
+			slog.Warn("Failed to delete cache for short code", "short_code", code, "error", err)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -406,7 +432,7 @@ func getMyUrls(w http.ResponseWriter, r *http.Request) {
 		slog.Error("Database connection not initialized")
 		return
 	}
-	userID, ok := r.Context().Value("user_id").(int64)
+	userID, ok := r.Context().Value(userIDKey).(int64)
 	if !ok {
 		WriteError(w, "Unauthorized: Missing or invalid token", http.StatusUnauthorized)
 		return
@@ -426,7 +452,7 @@ func getMyUrls(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var urls []map[string]interface{}
+	urls := make([]map[string]interface{}, 0)
 	for rows.Next() {
 		var shortCode, originalURL, createdAt string
 		var clicks int
@@ -442,8 +468,14 @@ func getMyUrls(w http.ResponseWriter, r *http.Request) {
 			"clicks":       clicks,
 			"short_url":    fmt.Sprintf("http://localhost:3000/%s", shortCode),
 		})
-		w.Header()
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(urls)
 	}
+	if err := rows.Err(); err != nil {
+		WriteError(w, "Failed to read URL data: Database error", http.StatusInternalServerError)
+		slog.Error("Row iteration error for user URLs", "user_id", userID, "error", err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(urls)
 }
