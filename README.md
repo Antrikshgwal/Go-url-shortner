@@ -24,48 +24,49 @@ Command:
 hey -n 1000 -c 50 -disable-redirects http://localhost:3000/MRUM5V
 ```
 
-Results (May 27, 2026):
+latest local benchmarking Results  (May 27, 2026):
 ```
 Summary:
-  Total:        0.7087 secs
-  Slowest:      0.1525 secs
-  Fastest:      0.0008 secs
-  Average:      0.0273 secs
-  Requests/sec: 1411.1139
+  Total:        0.9221 secs
+  Slowest:      0.0804 secs
+  Fastest:      0.0007 secs
+  Average:      0.0091 secs
+  Requests/sec: 5422.3066
 
-  Total data:   54000 bytes
-  Size/request: 54 bytes
+  Total data:   330000 bytes
+  Size/request: 66 bytes
 
 Response time histogram:
   0.001 [1]     |
-  0.016 [623]   |
-  0.031 [121]   |
-  0.046 [33]    |
-  0.062 [80]    |
-  0.077 [38]    |
-  0.092 [56]    |
-  0.107 [2]     |
-  0.122 [2]     |
-  0.137 [8]     |
-  0.153 [36]    |
+  0.009 [3426]  |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+  0.017 [1178]  |■■■■■■■■■■■■■■
+  0.025 [181]   |■■
+  0.033 [88]    |■
+  0.041 [28]    |
+  0.048 [27]    |
+  0.056 [22]    |
+  0.064 [22]    |
+  0.072 [19]    |
+  0.080 [8]     |
+
 
 Latency distribution:
-  10% in 0.0036 secs
-  25% in 0.0059 secs
-  50% in 0.0110 secs
-  75% in 0.0318 secs
-  90% in 0.0771 secs
-  95% in 0.0878 secs
-  99% in 0.1462 secs
+  10%% in 0.0043 secs
+  25%% in 0.0054 secs
+  50%% in 0.0070 secs
+  75%% in 0.0094 secs
+  90%% in 0.0145 secs
+  95%% in 0.0232 secs
+  99%% in 0.0557 secs
 
 Details (average, fastest, slowest):
-  DNS+dialup:   0.0005 secs, 0.0000 secs, 0.0115 secs
-  DNS-lookup:   0.0004 secs, 0.0000 secs, 0.0090 secs
-  req write:    0.0006 secs, 0.0000 secs, 0.1289 secs
-  resp wait:    0.0173 secs, 0.0008 secs, 0.1391 secs
-  resp read:    0.0084 secs, 0.0000 secs, 0.1315 secs
+  DNS+dialup:   0.0001 secs, 0.0000 secs, 0.0122 secs
+  DNS-lookup:   0.0001 secs, 0.0000 secs, 0.0105 secs
+  req write:    0.0001 secs, 0.0000 secs, 0.0050 secs
+  resp wait:    0.0085 secs, 0.0006 secs, 0.0732 secs
+  resp read:    0.0004 secs, 0.0000 secs, 0.0067 secs
 
 Status code distribution:
-  [302] 1000 responses
+  [302] 5000 responses
 ```
-Stack: Go + PostgreSQL + Redis 
+Stack: Go + PostgreSQL + Redis

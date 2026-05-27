@@ -8,12 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -25,15 +22,10 @@ var conn *sql.DB
 var rdb *redis.Client
 var ctx = context.Background()
 
-// contextKey is a private type for context keys to avoid collisions with
-// keys defined in other packages. (go vet SA1029)
 type contextKey string
 
 const userIDKey contextKey = "user_id"
 
-// cacheKey builds the canonical Redis key for a short code. Using one helper
-// guarantees the write path (redirect) and the invalidation path (deleteURL)
-// can never drift apart.
 func cacheKey(code string) string {
 	return "short_url:" + code
 }
@@ -124,6 +116,16 @@ func main() {
 		}
 	}
 
+	// close analytics pool before the main pool
+	if clickConn != nil {
+		slog.Info("Closing analytics database connections...")
+		if err := clickConn.Close(); err != nil {
+			slog.Error("Failed to close analytics database connection cleanly", "error", err)
+		} else {
+			slog.Info("Analytics database connection closed successfully")
+		}
+	}
+
 	// close database connections last
 	if conn != nil {
 		slog.Info("Closing database connections...")
@@ -204,14 +206,7 @@ type StatsResponse struct {
 	CreatedAt   string `json:"created_at"`
 }
 
-func generateCode() string {
-	charset := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	code := make([]byte, 6)
-	for i := range code {
-		code[i] = charset[rand.Intn(len(charset))]
-	}
-	return string(code)
-}
+const codeCharset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 func shorten(w http.ResponseWriter, r *http.Request) {
 	var req ShortenRequest
@@ -250,7 +245,12 @@ func shorten(w http.ResponseWriter, r *http.Request) {
 	var code string
 	var err error
 	for i := 0; i < maxCodeAttempts; i++ {
-		code = generateCode()
+		code, err = generateCode()
+		if err != nil {
+			slog.Error("Failed to generate random code", "error", err)
+			WriteError(w, "Failed to generate short code", http.StatusInternalServerError)
+			return
+		}
 		_, err = conn.Exec(`
 INSERT INTO urls (user_id, short_code, original_url)
 VALUES ($1, $2, $3)
@@ -343,7 +343,7 @@ SELECT id, original_url FROM urls WHERE short_code = $1
 	go func(id int, ip, ua string) {
 		insertCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_, err := conn.ExecContext(insertCtx, `
+		_, err := clickConn.ExecContext(insertCtx, `
 INSERT INTO clicks (url_id, ip_address, user_agent, clicked_at)
 VALUES ($1, $2, $3, $4)
 `, id, ip, ua, time.Now())
@@ -353,14 +353,6 @@ VALUES ($1, $2, $3, $4)
 	}(Id, ip, r.Header.Get("User-Agent"))
 
 	http.Redirect(w, r, originalURL, http.StatusFound)
-}
-
-func clientIP(remoteAddr string) string {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err == nil {
-		return strings.Trim(host, "[]")
-	}
-	return strings.Trim(remoteAddr, "[]")
 }
 
 func deleteURL(w http.ResponseWriter, r *http.Request) {
@@ -386,7 +378,7 @@ func deleteURL(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, "URL not found", http.StatusNotFound)
 		return
 	}
-	// Clear cache after deleting URL (must use the same key as the write path)
+	// Clear cache after deleting URL
 	if rdb != nil {
 		if err := rdb.Del(r.Context(), cacheKey(code)).Err(); err != nil && !errors.Is(err, redis.Nil) {
 			slog.Warn("Failed to delete cache for short code", "short_code", code, "error", err)

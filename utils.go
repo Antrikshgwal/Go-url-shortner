@@ -3,12 +3,16 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
+	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -35,6 +39,28 @@ func validateURL(input string) error {
 		return fmt.Errorf("URL exceeds maximum length of 2048 characters")
 	}
 	return nil
+}
+
+// It can fail if the OS entropy source is unavailable, so it returns an error.
+func generateCode() (string, error) {
+	code := make([]byte, 6)
+	max := big.NewInt(int64(len(codeCharset)))
+	for i := range code {
+		n, err := rand.Int(rand.Reader, max)
+		if err != nil {
+			return "", fmt.Errorf("generate random code: %w", err)
+		}
+		code[i] = codeCharset[n.Int64()]
+	}
+	return string(code), nil
+}
+
+func clientIP(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil {
+		return strings.Trim(host, "[]")
+	}
+	return strings.Trim(remoteAddr, "[]")
 }
 
 func isUniqueViolation(err error) bool {
