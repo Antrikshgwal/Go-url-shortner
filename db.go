@@ -11,9 +11,15 @@ import (
 
 var clickConn *sql.DB
 
-func db() error {
-	connStr := os.Getenv("DATABASE_URL")
+func getEnv(key, fallback string) string {
+    if val := os.Getenv(key); val != "" {
+        return val
+    }
+    return fallback
+}
 
+func db() error {
+	connStr := getEnv("DATABASE_URL", "postgresql://postgres:password@postgres:5432/urlshortener?sslmode=disable")
 
 	dbConn, err := sql.Open("postgres", connStr)
 	if err != nil {

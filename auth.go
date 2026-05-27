@@ -17,7 +17,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-var secret_key = []byte("your_secret_key")
+var secret_key = []byte(getEnv("JWT_SECRET", "secret_key"))
 
 func generateToken(userID int64, email string) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256,

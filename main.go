@@ -45,7 +45,7 @@ func main() {
 
 	// Initialize Redis client
 	rdb = redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
+		Addr:     getEnv("REDIS_URL", "redis:6379"),
 		Password: "", // no password set
 		DB:       0,  // use default DB
 	})
@@ -103,7 +103,7 @@ func main() {
 
 	handler := loggingMiddleware(mux)
 	server := &http.Server{
-		Addr:    ":3000",
+		Addr:    ":" + getEnv("PORT", "3000"),
 		Handler: handler,
 	}
 
