@@ -21,6 +21,13 @@ import (
 var conn *sql.DB
 var rdb *redis.Client
 var ctx = context.Background()
+var (
+    registerLimiter *RateLimiter
+    loginLimiter    *RateLimiter
+    redirectLimiter *RateLimiter
+    shortenLimiter  *RateLimiter
+    deleteLimiter   *RateLimiter
+)
 
 type contextKey string
 
@@ -50,6 +57,13 @@ func main() {
 	}
 	cancelPing()
 
+	// rate limit config
+	registerLimiter = NewRateLimiter(rdb, 5, time.Hour)
+	loginLimiter    = NewRateLimiter(rdb, 10, time.Hour)
+	redirectLimiter = NewRateLimiter(rdb, 60, time.Minute)
+	shortenLimiter  = NewRateLimiter(rdb, 10, time.Minute)
+	deleteLimiter   = NewRateLimiter(rdb, 20, time.Minute)
+
 	// Initialize logger
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -63,16 +77,29 @@ func main() {
 
 	//  Routing and middleware setup
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", handleRoot)
-	mux.HandleFunc("POST /register", RegisterHandler)
-	mux.HandleFunc("POST /login", LoginHandler)
-	mux.HandleFunc("GET /stats/{code}", getStats)
+	// Public endpoints: IP rate limited
+	mux.Handle("POST /register",
+    IPRateLimit(registerLimiter)(http.HandlerFunc(RegisterHandler)))
 
-	mux.Handle("POST /shorten", AuthMiddleware(http.HandlerFunc(shorten)))
-	mux.Handle("GET /myurls", AuthMiddleware(http.HandlerFunc(getMyUrls)))
-	mux.HandleFunc("GET /{code}", redirect)
-	mux.Handle("DELETE /{code}", AuthMiddleware(http.HandlerFunc(deleteURL)))
+	mux.Handle("POST /login",
+    IPRateLimit(loginLimiter)(http.HandlerFunc(LoginHandler)))
+
+	mux.Handle("GET /{code}",
+    IPRateLimit(redirectLimiter)(http.HandlerFunc(redirect)))
+
+// Authenticated endpoints: Auth first, then user rate limit
+	mux.Handle("POST /shorten",
+    AuthMiddleware(
+        UserRateLimit(shortenLimiter)(http.HandlerFunc(shorten))))
+
+	mux.Handle("DELETE /{code}",
+    AuthMiddleware(
+        UserRateLimit(deleteLimiter)(http.HandlerFunc(deleteURL))))
+
+	// No rate limiting
 	mux.HandleFunc("GET /health", healthHandler)
+	mux.HandleFunc("GET /stats/{code}", getStats)
+	mux.Handle("GET /my-urls", AuthMiddleware(http.HandlerFunc(getMyUrls)))
 
 	handler := loggingMiddleware(mux)
 	server := &http.Server{
