@@ -118,7 +118,7 @@ func main() {
 	mux.HandleFunc("GET /stats/{code}", getStats)
 	mux.Handle("GET /my-urls", AuthMiddleware(http.HandlerFunc(getMyUrls)))
 
-	handler := loggingMiddleware(mux)
+	handler := loggingMiddleware(corsMiddleware(mux))
 	server := &http.Server{
 		Addr:    ":" + getEnv("PORT", "3000"),
 		Handler: handler,

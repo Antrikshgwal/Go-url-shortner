@@ -101,6 +101,44 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// parseAllowedOrigins turns a comma-separated env value into a lookup set.
+func parseAllowedOrigins(raw string) map[string]bool {
+	m := make(map[string]bool)
+	for _, o := range strings.Split(raw, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			m[o] = true
+		}
+	}
+	return m
+}
+
+// corsMiddleware sets CORS headers and answers preflight (OPTIONS) requests.
+// todo: Allow all for now, tighten later
+func corsMiddleware(next http.Handler) http.Handler {
+	allowed := parseAllowedOrigins(getEnv("CORS_ALLOWED_ORIGINS", "*"))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			if allowed["*"] {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			} else if allowed[origin] {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Add("Vary", "Origin")
+			}
+		}
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+
+		// Preflight requests don't match the method-specific routes, so answer here.
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 type Errorresponse struct {
 	Error string `json:"error"`
 	Code  int    `json:"code"`
