@@ -74,7 +74,7 @@ func IPRateLimit(limiter *RateLimiter) func(http.Handler) http.Handler {
 func UserRateLimit(limiter *RateLimiter) func(http.Handler) http.Handler {
     return func(next http.Handler) http.Handler {
         return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-            userID, ok := r.Context().Value("user_id").(int64)
+            userID, ok := r.Context().Value(userIDKey).(int64)
             if !ok {
                 // No user ID means auth failed upstream, let AuthMiddleware handle it
                 next.ServeHTTP(w, r)

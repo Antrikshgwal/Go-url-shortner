@@ -38,6 +38,11 @@ func cacheKey(code string) string {
 	return "short_url:" + code
 }
 
+
+func baseURL() string {
+	return strings.TrimRight(getEnv("BASE_URL", "http://localhost:3000"), "/")
+}
+
 type User struct {
 	Name string `json:"name"`
 }
@@ -45,7 +50,7 @@ type User struct {
 func main() {
 
 	// Initialize Redis client.
-	
+
 	redisAddr := getEnv("REDIS_URL", "redis:6379")
 	if strings.Contains(redisAddr, "://") {
 		opts, err := redis.ParseURL(redisAddr)
@@ -313,7 +318,7 @@ VALUES ($1, $2, $3)
 
 	resp := ShortenResponse{
 		ShortCode: code,
-		ShortURL:  fmt.Sprintf("http://localhost:3000/%s", code),
+		ShortURL:  fmt.Sprintf("%s/%s", baseURL(), code),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -497,7 +502,7 @@ func getMyUrls(w http.ResponseWriter, r *http.Request) {
 			"original_url": originalURL,
 			"created_at":   createdAt,
 			"clicks":       clicks,
-			"short_url":    fmt.Sprintf("http://localhost:3000/%s", shortCode),
+			"short_url":    fmt.Sprintf("%s/%s", baseURL(), shortCode),
 		})
 	}
 	if err := rows.Err(); err != nil {

@@ -9,22 +9,23 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
-var secret_key = []byte(getEnv("JWT_SECRET", "secret_key"))
+var secret_key = []byte(os.Getenv("JWT_SECRET"))
 
 func generateToken(userID int64, email string) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256,
 		jwt.MapClaims{
 			"user_id": userID,
 			"email":   email,
-			"exp":      time.Now().Add(time.Hour * 24).Unix(),
+			"exp":     time.Now().Add(time.Hour * 24).Unix(),
 		})
 
 	tokenString, err := token.SignedString(secret_key)
@@ -142,8 +143,8 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"user_id": id,
-		"email":    creds.Email,
-		"token":    token,
+		"email":   creds.Email,
+		"token":   token,
 	})
 }
 
@@ -210,7 +211,7 @@ func AuthMiddleware(next http.Handler) http.Handler {
 			WriteError(w, "Invalid or expired token", http.StatusUnauthorized)
 			return
 		}
-		ctx := context.WithValue(r.Context(), "user_id", userID)
+		ctx := context.WithValue(r.Context(), userIDKey, userID)
 		ctx = context.WithValue(ctx, "email", email)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
