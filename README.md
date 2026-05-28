@@ -1,22 +1,35 @@
-# Go-url-shortner
-Backend URL shortener service built with Go, PostgreSQL, and Gorilla Mux. Provides API endpoints for creating and retrieving shortened URLs, with graceful shutdown support.
+# Snip 🔗
 
-## Current status
-- [x] Basic URL shortening functionality and analytics
-- [x] Graceful shutdown and structured logging
-- [ ] Unit tests for handlers and database interactions
-- [ ] Dockerization and deployment scripts
-- [ ] Rate limiting and analytics features
-- [ ] Frontend interface for URL management
-- [ ] CI/CD pipeline setup
-- [ ] Documentation and API specs
-- [ ] Performance optimizations and security hardening
-- [ ] Monitoring and alerting integration
-- [ ] User authentication and management
-- [ ] Custom URL aliases and expiration features
-- [ ] Internationalization and localization support
-- [ ] Caching layer for improved performance
-- [ ] Load testing and scalability improvements
+A production-grade URL shortener built with Go.
+
+**Live**: https://snip-seo2.onrender.com
+
+## Features
+- URL shortening with Base62 encoding
+- Click analytics per URL
+- JWT authentication
+- Redis caching
+- Rate limiting (per IP + per user)
+- Structured logging
+- Graceful shutdown
+- Dockerized
+
+## Stack
+- Go (net/http)
+- PostgreSQL (Neon)
+- Redis (Upstash)
+- Docker
+- Render
+
+## API
+POST /register     - Create account
+POST /login        - Get JWT token
+POST /shorten      - Create short URL (auth required)
+GET  /{code}       - Redirect to original URL
+GET  /stats/{code} - Click analytics
+GET  /myurls       - List your URLs (auth required)
+DELETE /{code}     - Delete URL (auth required)
+GET  /health       - Health check
 
 ## Caching benchmarks
 Command:

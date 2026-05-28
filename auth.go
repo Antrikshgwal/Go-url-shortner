@@ -155,23 +155,23 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var creds struct {
-		Username string `json:"username"`
+		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
 		WriteError(w, "Invalid request payload", http.StatusBadRequest)
 		return
 	}
-	if creds.Username == "" || creds.Password == "" {
-		WriteError(w, "Username and password are required", http.StatusBadRequest)
+	if creds.Email == "" || creds.Password == "" {
+		WriteError(w, "Email and password are required", http.StatusBadRequest)
 		return
 	}
 	var storedHashedPassword string
 	var email string
 	var userID int64
-	if err := conn.QueryRow("SELECT user_id, password_hash, email FROM users WHERE user_name = $1", creds.Username).Scan(&userID, &storedHashedPassword, &email); err != nil {
+	if err := conn.QueryRow("SELECT user_id, password_hash, email FROM users WHERE email = $1", creds.Email).Scan(&userID, &storedHashedPassword, &email); err != nil {
 		if err == sql.ErrNoRows {
-			WriteError(w, "Invalid username or password", http.StatusUnauthorized)
+			WriteError(w, "Invalid email or password", http.StatusUnauthorized)
 		} else {
 			slog.Error("login lookup failed", "error", err)
 			WriteError(w, "Database error", http.StatusInternalServerError)
@@ -180,7 +180,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(storedHashedPassword), []byte(creds.Password)); err != nil {
-		WriteError(w, "Invalid username or password", http.StatusUnauthorized)
+		WriteError(w, "Invalid email or password", http.StatusUnauthorized)
 		return
 	}
 
