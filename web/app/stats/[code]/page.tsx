@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { api, ApiError, SHORT_BASE, Stats } from "@/lib/api";
+import { api, ApiError, SHORT_BASE, Stats, Analytics, AnalyticsBreakdown } from "@/lib/api";
 import Copy from "@/components/Copy";
 
 export default function StatsPage() {
@@ -11,15 +11,17 @@ export default function StatsPage() {
   const code = params.code;
 
   const [stats, setStats] = useState<Stats | null>(null);
+  const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [rangeDays, setRangeDays] = useState(7);
 
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const s = await api.stats(code);
-        if (alive) setStats(s);
+        const [s, a] = await Promise.all([api.stats(code), api.analytics(code, rangeDays)]);
+        if (alive) { setStats(s); setAnalytics(a); }
       } catch (err) {
         if (alive) setError(err instanceof ApiError ? err.message : "Failed to load stats");
       } finally {
@@ -27,7 +29,7 @@ export default function StatsPage() {
       }
     })();
     return () => { alive = false; };
-  }, [code]);
+  }, [code, rangeDays]);
 
   const shortUrl = `${SHORT_BASE}/${code}`;
 
@@ -66,6 +68,43 @@ export default function StatsPage() {
             </div>
           </div>
 
+          {/* timeseries chart */}
+          {analytics && analytics.timeseries.length > 0 && (
+            <div className="panel panel-pad" style={{ marginTop: 16 }}>
+              <div className="row spread" style={{ alignItems: "center", marginBottom: 18 }}>
+                <span className="label" style={{ margin: 0 }}>Clicks over time</span>
+                <div className="row" style={{ gap: 6 }}>
+                  {[7, 14, 30].map((d) => (
+                    <button
+                      key={d}
+                      onClick={() => setRangeDays(d)}
+                      className={`btn btn-ghost ${rangeDays === d ? "acid" : ""}`}
+                      style={{ fontSize: "0.7rem", padding: "4px 10px", opacity: rangeDays === d ? 1 : 0.55 }}
+                    >
+                      {d}d
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <Sparkline data={analytics.timeseries} />
+              <p className="muted mono" style={{ fontSize: "0.7rem", marginTop: 12, letterSpacing: "0.06em" }}>
+                {analytics.total_clicks} clicks · last {analytics.range_days} days
+              </p>
+            </div>
+          )}
+
+          {/* breakdowns */}
+          {analytics && (analytics.top_referrers.length > 0 || analytics.browser_breakdown.length > 0) && (
+            <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 16 }}>
+              {analytics.top_referrers.length > 0 && (
+                <BreakdownPanel title="Top referrers" rows={analytics.top_referrers} />
+              )}
+              {analytics.browser_breakdown.length > 0 && (
+                <BreakdownPanel title="Browsers" rows={analytics.browser_breakdown} />
+              )}
+            </div>
+          )}
+
           {/* detail rows */}
           <div className="panel" style={{ marginTop: 16 }}>
             <Detail label="Short code" value={`/${stats.short_code}`} mono />
@@ -77,6 +116,60 @@ export default function StatsPage() {
         </div>
       ) : null}
     </main>
+  );
+}
+
+function Sparkline({ data }: { data: { bucket: string; clicks: number }[] }) {
+  const W = 720, H = 140, P = 6;
+  const max = Math.max(1, ...data.map((d) => d.clicks));
+  const step = data.length > 1 ? (W - P * 2) / (data.length - 1) : 0;
+  const points = data.map((d, i) => {
+    const x = P + i * step;
+    const y = H - P - (d.clicks / max) * (H - P * 2);
+    return [x, y] as const;
+  });
+  const line = points.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const area = `${line} L${points[points.length - 1][0].toFixed(1)},${H - P} L${points[0][0].toFixed(1)},${H - P} Z`;
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" style={{ display: "block" }}>
+      <defs>
+        <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="rgba(212,255,77,0.28)" />
+          <stop offset="100%" stopColor="rgba(212,255,77,0)" />
+        </linearGradient>
+      </defs>
+      <path d={area} fill="url(#spark-fill)" />
+      <path d={line} fill="none" stroke="#d4ff4d" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+      {points.map(([x, y], i) => (
+        <circle key={i} cx={x} cy={y} r="2.2" fill="#d4ff4d" opacity={data[i].clicks > 0 ? 1 : 0.25} />
+      ))}
+    </svg>
+  );
+}
+
+function BreakdownPanel({ title, rows }: { title: string; rows: AnalyticsBreakdown[] }) {
+  const total = rows.reduce((s, r) => s + r.clicks, 0) || 1;
+  return (
+    <div className="panel panel-pad">
+      <span className="label" style={{ marginBottom: 16, display: "block" }}>{title}</span>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {rows.map((r, i) => {
+          const pct = (r.clicks / total) * 100;
+          return (
+            <div key={i}>
+              <div className="row spread" style={{ marginBottom: 4, fontSize: "0.82rem" }}>
+                <span className="mono dim truncate" style={{ maxWidth: "70%" }} title={r.label}>{r.label}</span>
+                <span className="mono muted">{r.clicks}</span>
+              </div>
+              <div style={{ height: 3, background: "rgba(255,255,255,0.06)", borderRadius: 2, overflow: "hidden" }}>
+                <div style={{ width: `${pct}%`, height: "100%", background: "#d4ff4d" }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

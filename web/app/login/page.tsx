@@ -11,6 +11,7 @@ export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -41,7 +42,7 @@ export default function LoginPage() {
             Back to the<br /><em>console.</em>
           </h1>
         </div>
-       
+
       </aside>
 
       <main className="auth-main">
@@ -59,20 +60,32 @@ export default function LoginPage() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="operator@signal.io"
+               
                 autoComplete="email"
               />
             </div>
             <div>
               <label className="label">Password</label>
-              <input
-                className="field"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                autoComplete="current-password"
-              />
+              <div style={{ position: "relative" }}>
+                <input
+                  className="field"
+                  type={showPw ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  autoComplete="current-password"
+                  style={{ paddingRight: 64 }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPw((s) => !s)}
+                  aria-label={showPw ? "Hide password" : "Show password"}
+                  className="mono muted"
+                  style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "transparent", border: 0, padding: 0, fontSize: "0.7rem", letterSpacing: "0.08em", cursor: "pointer" }}
+                >
+                  {showPw ? "HIDE" : "SHOW"}
+                </button>
+              </div>
             </div>
 
             {error && <p className="msg msg-err">{error}</p>}

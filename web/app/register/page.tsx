@@ -12,6 +12,7 @@ export default function RegisterPage() {
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -62,7 +63,7 @@ export default function RegisterPage() {
                 className="field"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="operator"
+
                 autoComplete="username"
               />
             </div>
@@ -73,20 +74,32 @@ export default function RegisterPage() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@domain.com"
+               
                 autoComplete="email"
               />
             </div>
             <div>
               <label className="label">Password</label>
-              <input
-                className="field"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                autoComplete="new-password"
-              />
+              <div style={{ position: "relative" }}>
+                <input
+                  className="field"
+                  type={showPw ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  autoComplete="new-password"
+                  style={{ paddingRight: 64 }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPw((s) => !s)}
+                  aria-label={showPw ? "Hide password" : "Show password"}
+                  className="mono muted"
+                  style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "transparent", border: 0, padding: 0, fontSize: "0.7rem", letterSpacing: "0.08em", cursor: "pointer" }}
+                >
+                  {showPw ? "HIDE" : "SHOW"}
+                </button>
+              </div>
             </div>
 
             {error && <p className="msg msg-err">{error}</p>}

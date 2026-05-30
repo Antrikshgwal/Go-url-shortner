@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -115,6 +117,7 @@ func main() {
 	// No rate limiting
 	mux.HandleFunc("GET /health", healthHandler)
 	mux.HandleFunc("GET /stats/{code}", getStats)
+	mux.HandleFunc("GET /stats/{code}/analytics", getAnalytics)
 	mux.Handle("GET /my-urls", AuthMiddleware(http.HandlerFunc(getMyUrls)))
 
 	handler := loggingMiddleware(corsMiddleware(mux))
@@ -407,17 +410,17 @@ SELECT id, original_url FROM urls WHERE short_code = $1
 	}
 
 	ip := clientIP(r.RemoteAddr)
-	go func(id int, ip, ua string) {
+	go func(id int, ip, ua, ref string) {
 		insertCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_, err := clickConn.ExecContext(insertCtx, `
-INSERT INTO clicks (url_id, ip_address, user_agent, clicked_at)
-VALUES ($1, $2, $3, $4)
-`, id, ip, ua, time.Now())
+INSERT INTO clicks (url_id, ip_address, user_agent, referrer, clicked_at)
+VALUES ($1, $2, $3, NULLIF($4, ''), $5)
+`, id, ip, ua, ref, time.Now())
 		if err != nil {
 			slog.Error("Failed to record click", "error", err)
 		}
-	}(Id, ip, r.Header.Get("User-Agent"))
+	}(Id, ip, r.Header.Get("User-Agent"), r.Header.Get("Referer"))
 
 	http.Redirect(w, r, originalURL, http.StatusFound)
 }
@@ -483,6 +486,155 @@ GROUP BY u.id
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(stats)
+}
+
+type AnalyticsBucket struct {
+	Bucket string `json:"bucket"`
+	Clicks int    `json:"clicks"`
+}
+
+type AnalyticsBreakdown struct {
+	Label  string `json:"label"`
+	Clicks int    `json:"clicks"`
+}
+
+type AnalyticsResponse struct {
+	ShortCode     string               `json:"short_code"`
+	RangeDays     int                  `json:"range_days"`
+	TotalClicks   int                  `json:"total_clicks"`
+	Timeseries    []AnalyticsBucket    `json:"timeseries"`
+	TopReferrers  []AnalyticsBreakdown `json:"top_referrers"`
+	BrowserBreakdown []AnalyticsBreakdown `json:"browser_breakdown"`
+}
+
+func getAnalytics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if conn == nil {
+		WriteError(w, "Database not initialized", http.StatusServiceUnavailable)
+		return
+	}
+	code := r.PathValue("code")
+
+	// Clamp range to [1, 90] days, default 7.
+	days := 7
+	if raw := r.URL.Query().Get("days"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 1 && n <= 90 {
+			days = n
+		}
+	}
+
+	var urlID int64
+	if err := conn.QueryRow(`SELECT id FROM urls WHERE short_code = $1`, code).Scan(&urlID); err != nil {
+		if err == sql.ErrNoRows {
+			WriteError(w, "Short code not found", http.StatusNotFound)
+			return
+		}
+		slog.Error("analytics: lookup failed", "error", err)
+		WriteError(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	since := time.Now().AddDate(0, 0, -days)
+	resp := AnalyticsResponse{ShortCode: code, RangeDays: days}
+
+	// Timeseries: one row per day. generate_series fills empty days with 0.
+	tsRows, err := conn.Query(`
+		WITH days AS (
+			SELECT generate_series(
+				date_trunc('day', $1::timestamp),
+				date_trunc('day', NOW()),
+				'1 day'
+			) AS bucket
+		)
+		SELECT d.bucket, COALESCE(COUNT(c.id), 0)
+		FROM days d
+		LEFT JOIN clicks c
+			ON c.url_id = $2
+			AND date_trunc('day', c.clicked_at) = d.bucket
+		GROUP BY d.bucket
+		ORDER BY d.bucket
+	`, since, urlID)
+	if err != nil {
+		slog.Error("analytics: timeseries query failed", "error", err)
+		WriteError(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	for tsRows.Next() {
+		var b AnalyticsBucket
+		var t time.Time
+		if err := tsRows.Scan(&t, &b.Clicks); err != nil {
+			tsRows.Close()
+			slog.Error("analytics: timeseries scan failed", "error", err)
+			WriteError(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+		b.Bucket = t.Format("2006-01-02")
+		resp.Timeseries = append(resp.Timeseries, b)
+		resp.TotalClicks += b.Clicks
+	}
+	tsRows.Close()
+
+	// Top 5 referrers in window. NULL → "(direct)".
+	refRows, err := conn.Query(`
+		SELECT COALESCE(referrer, '(direct)') AS ref, COUNT(*) AS clicks
+		FROM clicks
+		WHERE url_id = $1 AND clicked_at >= $2
+		GROUP BY ref
+		ORDER BY clicks DESC
+		LIMIT 5
+	`, urlID, since)
+	if err != nil {
+		slog.Error("analytics: referrers query failed", "error", err)
+		WriteError(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	for refRows.Next() {
+		var b AnalyticsBreakdown
+		if err := refRows.Scan(&b.Label, &b.Clicks); err != nil {
+			refRows.Close()
+			slog.Error("analytics: referrers scan failed", "error", err)
+			WriteError(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+		b.Label = shortenReferrer(b.Label)
+		resp.TopReferrers = append(resp.TopReferrers, b)
+	}
+	refRows.Close()
+
+	// Browser breakdown — bucket UAs into a handful of categories in Go.
+	uaRows, err := conn.Query(`
+		SELECT COALESCE(user_agent, ''), COUNT(*)
+		FROM clicks
+		WHERE url_id = $1 AND clicked_at >= $2
+		GROUP BY user_agent
+	`, urlID, since)
+	if err != nil {
+		slog.Error("analytics: ua query failed", "error", err)
+		WriteError(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	browsers := map[string]int{}
+	for uaRows.Next() {
+		var ua string
+		var n int
+		if err := uaRows.Scan(&ua, &n); err != nil {
+			uaRows.Close()
+			slog.Error("analytics: ua scan failed", "error", err)
+			WriteError(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+		browsers[classifyBrowser(ua)] += n
+	}
+	uaRows.Close()
+	for label, n := range browsers {
+		resp.BrowserBreakdown = append(resp.BrowserBreakdown, AnalyticsBreakdown{Label: label, Clicks: n})
+	}
+	sort.Slice(resp.BrowserBreakdown, func(i, j int) bool {
+		return resp.BrowserBreakdown[i].Clicks > resp.BrowserBreakdown[j].Clicks
+	})
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
 }
 
 func getMyUrls(w http.ResponseWriter, r *http.Request) {

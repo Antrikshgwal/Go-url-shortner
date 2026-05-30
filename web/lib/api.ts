@@ -74,6 +74,16 @@ export interface Stats {
   clicks: number;
   created_at: string;
 }
+export interface AnalyticsBucket { bucket: string; clicks: number }
+export interface AnalyticsBreakdown { label: string; clicks: number }
+export interface Analytics {
+  short_code: string;
+  range_days: number;
+  total_clicks: number;
+  timeseries: AnalyticsBucket[];
+  top_referrers: AnalyticsBreakdown[];
+  browser_breakdown: AnalyticsBreakdown[];
+}
 
 // ---- endpoints ----
 export const api = {
@@ -93,6 +103,9 @@ export const api = {
   myUrls: () => request<UrlRow[]>("/my-urls", { auth: true }),
 
   stats: (code: string) => request<Stats>(`/stats/${encodeURIComponent(code)}`, {}),
+
+  analytics: (code: string, days = 7) =>
+    request<Analytics>(`/stats/${encodeURIComponent(code)}/analytics?days=${days}`, {}),
 
   remove: (code: string) =>
     request<void>(`/${encodeURIComponent(code)}`, { method: "DELETE", auth: true }),

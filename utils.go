@@ -28,6 +28,41 @@ var reservedAliases = map[string]bool{
 	"favicon.ico": true, "robots.txt": true,
 }
 
+// shortenReferrer collapses a full referrer URL down to its host (or "(direct)").
+func shortenReferrer(raw string) string {
+	if raw == "" || raw == "(direct)" {
+		return "(direct)"
+	}
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		return strings.TrimPrefix(u.Host, "www.")
+	}
+	return raw
+}
+
+// classifyBrowser does a cheap substring match on the User-Agent.
+// Good enough for a portfolio analytics view; not a full parser.
+func classifyBrowser(ua string) string {
+	if ua == "" {
+		return "Unknown"
+	}
+	lower := strings.ToLower(ua)
+	switch {
+	case strings.Contains(lower, "edg/"):
+		return "Edge"
+	case strings.Contains(lower, "opr/") || strings.Contains(lower, "opera"):
+		return "Opera"
+	case strings.Contains(lower, "firefox"):
+		return "Firefox"
+	case strings.Contains(lower, "chrome"):
+		return "Chrome"
+	case strings.Contains(lower, "safari"):
+		return "Safari"
+	case strings.Contains(lower, "bot") || strings.Contains(lower, "crawler") || strings.Contains(lower, "spider"):
+		return "Bot"
+	}
+	return "Other"
+}
+
 func validateAlias(alias string) error {
 	if len(alias) < 3 || len(alias) > 30 {
 		return fmt.Errorf("alias must be between 3 and 30 characters")
