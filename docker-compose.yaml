@@ -41,6 +41,18 @@ services:
       timeout: 5s
       retries: 5
 
+  tests:
+    image: golang:1.26-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+      - go_mod_cache:/go/pkg/mod
+      - go_build_cache:/root/.cache/go-build
+    command: go test -v -cover .
+    profiles: ["tests"]
+
 volumes:
   postgres_data:
   redis_data:
+  go_mod_cache:
+  go_build_cache:
