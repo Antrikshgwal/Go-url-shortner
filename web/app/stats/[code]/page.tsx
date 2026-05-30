@@ -19,13 +19,21 @@ export default function StatsPage() {
   useEffect(() => {
     let alive = true;
     (async () => {
+      // Fetch stats and analytics independently so a missing/old analytics
+      // endpoint doesn't take down the whole page.
       try {
-        const [s, a] = await Promise.all([api.stats(code), api.analytics(code, rangeDays)]);
-        if (alive) { setStats(s); setAnalytics(a); }
+        const s = await api.stats(code);
+        if (alive) setStats(s);
       } catch (err) {
         if (alive) setError(err instanceof ApiError ? err.message : "Failed to load stats");
       } finally {
         if (alive) setLoading(false);
+      }
+      try {
+        const a = await api.analytics(code, rangeDays);
+        if (alive) setAnalytics(a);
+      } catch {
+        if (alive) setAnalytics(null); // analytics is optional; silently skip
       }
     })();
     return () => { alive = false; };
