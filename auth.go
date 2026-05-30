@@ -92,6 +92,11 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, "Username, email, and password are required", http.StatusBadRequest)
 		return
 	}
+	// Normalize for storage and lookup: emails are case-insensitive, usernames
+	// shouldn't have leading/trailing whitespace.
+	creds.Email = strings.ToLower(strings.TrimSpace(creds.Email))
+	creds.Username = strings.TrimSpace(creds.Username)
+
 	// check if user_name or email already exists in database
 	var id int64
 
@@ -106,7 +111,8 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = conn.QueryRow("SELECT user_id FROM users WHERE email = $1", creds.Email).Scan(&id)
+	
+	err = conn.QueryRow("SELECT user_id FROM users WHERE LOWER(email) = $1", creds.Email).Scan(&id)
 	if err == nil {
 		WriteError(w, "Email already exists", http.StatusConflict)
 		return
@@ -166,10 +172,14 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, "Email and password are required", http.StatusBadRequest)
 		return
 	}
+	creds.Email = strings.ToLower(strings.TrimSpace(creds.Email))
+
 	var storedHashedPassword string
 	var email string
 	var userID int64
-	if err := conn.QueryRow("SELECT user_id, password_hash, email FROM users WHERE email = $1", creds.Email).Scan(&userID, &storedHashedPassword, &email); err != nil {
+	// LOWER() so legacy mixed-case emails ("Alice@x.com") still match when
+	// the user logs in with "alice@x.com".
+	if err := conn.QueryRow("SELECT user_id, password_hash, email FROM users WHERE LOWER(email) = $1", creds.Email).Scan(&userID, &storedHashedPassword, &email); err != nil {
 		if err == sql.ErrNoRows {
 			WriteError(w, "Invalid email or password", http.StatusUnauthorized)
 		} else {

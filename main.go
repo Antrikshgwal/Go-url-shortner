@@ -1,6 +1,6 @@
 package main
 
-// mux - multiplexer is a request router that redirects the traffic to particular endpoint or handler function
+// Contains http handlers
 import (
 	"context"
 	"database/sql"
@@ -50,7 +50,6 @@ type User struct {
 func main() {
 
 	// Initialize Redis client.
-
 	redisAddr := getEnv("REDIS_URL", "redis:6379")
 	if strings.Contains(redisAddr, "://") {
 		opts, err := redis.ParseURL(redisAddr)
@@ -236,6 +235,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 type ShortenRequest struct {
 	OriginalURL string `json:"original_url"`
 	URL         string `json:"url"`
+	Alias       string `json:"alias"`
 }
 
 type ShortenResponse struct {
@@ -285,35 +285,58 @@ func shorten(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	const maxCodeAttempts = 5
+	alias := strings.TrimSpace(req.Alias)
 	var code string
 	var err error
-	for i := 0; i < maxCodeAttempts; i++ {
-		code, err = generateCode()
-		if err != nil {
-			slog.Error("Failed to generate random code", "error", err)
-			WriteError(w, "Failed to generate short code", http.StatusInternalServerError)
+
+	if alias != "" {
+		if err := validateAlias(alias); err != nil {
+			WriteError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		_, err = conn.Exec(`
+		_, err := conn.Exec(`
+INSERT INTO urls (user_id, short_code, original_url)
+VALUES ($1, $2, $3)
+`, userID, alias, req.OriginalURL)
+		if err != nil {
+			if isUniqueViolation(err) {
+				WriteError(w, "Alias is already taken", http.StatusConflict)
+				return
+			}
+			slog.Error("Failed to insert URL with alias", "error", err)
+			WriteError(w, "Failed to insert URL", http.StatusInternalServerError)
+			return
+		}
+		code = alias
+	} else {
+		const maxCodeAttempts = 5
+		for i := 0; i < maxCodeAttempts; i++ {
+			code, err = generateCode()
+			if err != nil {
+				slog.Error("Failed to generate random code", "error", err)
+				WriteError(w, "Failed to generate short code", http.StatusInternalServerError)
+				return
+			}
+			_, err = conn.Exec(`
 INSERT INTO urls (user_id, short_code, original_url)
 VALUES ($1, $2, $3)
 `, userID, code, req.OriginalURL)
-		if err == nil {
-			break
+			if err == nil {
+				break
+			}
+			if isUniqueViolation(err) {
+				slog.Warn("Short code collision, retrying", "attempt", i+1, "error", err)
+				continue
+			}
+			slog.Error("Failed to insert URL", "error", err)
+			WriteError(w, "Failed to insert URL", http.StatusInternalServerError)
+			return
 		}
-		if isUniqueViolation(err) {
-			slog.Warn("Short code collision, retrying", "attempt", i+1, "error", err)
-			continue
+		if err != nil {
+			WriteError(w, "Failed to generate unique short code", http.StatusInternalServerError)
+			slog.Error("Failed to generate unique short code", "error", err)
+			return
 		}
-		slog.Error("Failed to insert URL", "error", err)
-		WriteError(w, "Failed to insert URL", http.StatusInternalServerError)
-		return
-	}
-	if err != nil {
-		WriteError(w, "Failed to generate unique short code", http.StatusInternalServerError)
-		slog.Error("Failed to generate unique short code", "error", err)
-		return
 	}
 
 	resp := ShortenResponse{

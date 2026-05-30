@@ -16,6 +16,7 @@ export default function Dashboard() {
   const [error, setError] = useState("");
 
   const [url, setUrl] = useState("");
+  const [alias, setAlias] = useState("");
   const [busy, setBusy] = useState(false);
   const [formErr, setFormErr] = useState("");
 
@@ -45,8 +46,9 @@ export default function Dashboard() {
     setFormErr("");
     setBusy(true);
     try {
-      await api.shorten(url.trim());
+      await api.shorten(url.trim(), alias.trim() || undefined);
       setUrl("");
+      setAlias("");
       await load();
     } catch (err) {
       setFormErr(err instanceof ApiError ? err.message : "Failed to shorten");
@@ -88,17 +90,27 @@ export default function Dashboard() {
       {/* inline shorten */}
       <form className="panel panel-pad rise d2" onSubmit={shorten} style={{ marginTop: 40 }}>
         <label className="label">Compress a new URL</label>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 200px auto", gap: 12 }}>
           <input
             className="field"
             placeholder="https://…"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
           />
+          <input
+            className="field"
+            placeholder="custom alias (optional)"
+            value={alias}
+            onChange={(e) => setAlias(e.target.value)}
+            maxLength={30}
+          />
           <button className="btn btn-primary" disabled={busy}>
             {busy ? "…" : "Compress →"}
           </button>
         </div>
+        <p className="muted" style={{ marginTop: 10, fontSize: "0.78rem" }}>
+          Leave the alias blank for a random 6-char code. Letters, numbers, <code>-</code> and <code>_</code>; 3–30 chars.
+        </p>
         {formErr && <p className="msg msg-err" style={{ marginTop: 14 }}>{formErr}</p>}
       </form>
 

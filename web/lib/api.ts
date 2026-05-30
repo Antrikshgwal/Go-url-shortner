@@ -83,8 +83,12 @@ export const api = {
   login: (email: string, password: string) =>
     request<AuthResponse>("/login", { method: "POST", body: { email, password } }),
 
-  shorten: (url: string) =>
-    request<ShortenResponse>("/shorten", { method: "POST", auth: true, body: { url } }),
+  shorten: (url: string, alias?: string) =>
+    request<ShortenResponse>("/shorten", {
+      method: "POST",
+      auth: true,
+      body: alias ? { url, alias } : { url },
+    }),
 
   myUrls: () => request<UrlRow[]>("/my-urls", { auth: true }),
 

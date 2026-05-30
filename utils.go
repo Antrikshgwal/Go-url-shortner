@@ -12,11 +12,34 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/lib/pq"
 )
+
+var aliasPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// Reserved aliases collide with real routes or expected paths.
+var reservedAliases = map[string]bool{
+	"register": true, "login": true, "shorten": true, "health": true,
+	"stats": true, "my-urls": true, "api": true,
+	"favicon.ico": true, "robots.txt": true,
+}
+
+func validateAlias(alias string) error {
+	if len(alias) < 3 || len(alias) > 30 {
+		return fmt.Errorf("alias must be between 3 and 30 characters")
+	}
+	if !aliasPattern.MatchString(alias) {
+		return fmt.Errorf("alias may only contain letters, numbers, '-' and '_'")
+	}
+	if reservedAliases[strings.ToLower(alias)] {
+		return fmt.Errorf("alias is reserved")
+	}
+	return nil
+}
 
 // validate input URL
 // 1. Must start with http:// or https://
