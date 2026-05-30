@@ -44,7 +44,7 @@ path stays under 10 ms at 5k RPS on a single Render free-tier instance.
 
 | Layer       | Tool                          |
 |-------------|-------------------------------|
-| API         | Go 1.26 (`net/http` only)     |
+| API         | Go 1.24 (`net/http` only)     |
 | Database    | PostgreSQL 18 (Neon)          |
 | Cache / RL  | Redis (Upstash, TLS)          |
 | Frontend    | Next.js 16 (App Router) + TS  |
@@ -223,4 +223,4 @@ Render free-tier instance, not by the server itself.
 ├── docker-compose.yaml  # api + postgres + redis + tests profile
 └── web/                 # Next.js dashboard (deployed separately to Vercel)
 ```
-Made with ❤️ by Antriksh Gwal. See the [blog post](https://antrikshg.com/posts/url-shortener/) for a deep dive into the design and implementation.
+Made with ❤️ by Antriksh Gwal. See the [blog post](https://medium.com/@antrikshgwal/backend-engineering-101-peeking-behind-the-curtain-196362bcbdfd) for a deep dive into the design and implementation.
